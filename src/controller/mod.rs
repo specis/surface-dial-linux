@@ -7,15 +7,15 @@ pub mod controls;
 
 pub struct ControlModeMeta {
     /// Mode Name (as displayed in the Meta selection menu)
-    name: &'static str,
+    pub(crate) name: String,
     /// Mode Icon (as displayed in the Meta selection menu)
     ///
     /// This can be a file:// url, or a standard FreeDesktop icon name.
-    icon: &'static str,
+    pub(crate) icon: String,
     /// Enable automatic haptic feedback when rotating the dial.
-    haptics: bool,
+    pub(crate) haptics: bool,
     /// How many sections the dial should be divided into (from 0 to 3600).
-    steps: u16,
+    pub(crate) steps: u16,
 }
 
 pub trait ControlMode {
@@ -151,6 +151,17 @@ impl MetaMode {
     }
 }
 
+/// Advance `current` by `delta` within `[0, len)`, wrapping at both ends.
+pub(crate) fn cycle_mode_index(current: usize, delta: i32, len: usize) -> usize {
+    if delta > 0 {
+        (current + 1) % len
+    } else if current == 0 {
+        len - 1
+    } else {
+        current - 1
+    }
+}
+
 impl ControlMode for MetaMode {
     fn meta(&self) -> ControlModeMeta {
         unreachable!() // meta mode never queries itself
@@ -203,26 +214,65 @@ impl ControlMode for MetaMode {
     }
 
     fn on_dial(&mut self, _haptics: &DialHaptics, delta: i32) -> Result<()> {
-        if delta > 0 {
-            self.current_mode += 1;
-        } else {
-            if self.current_mode == 0 {
-                self.current_mode = self.metas.len() - 1;
-            } else {
-                self.current_mode -= 1;
-            }
-        };
-
-        self.current_mode %= self.metas.len();
+        self.current_mode = cycle_mode_index(self.current_mode, delta, self.metas.len());
 
         let mode_meta = &self.metas[self.current_mode];
         if let Some(ref mut notification) = self.notif {
             notification
                 .body(&format!("New Mode: {}", mode_meta.name))
-                .icon(mode_meta.icon);
+                .icon(&mode_meta.icon);
             notification.update();
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // cycle_mode_index tests
+
+    #[test]
+    fn cycle_forward_in_middle() {
+        assert_eq!(cycle_mode_index(1, 1, 3), 2);
+    }
+
+    #[test]
+    fn cycle_forward_wraps_at_end() {
+        assert_eq!(cycle_mode_index(2, 1, 3), 0);
+    }
+
+    #[test]
+    fn cycle_backward_in_middle() {
+        assert_eq!(cycle_mode_index(1, -1, 3), 0);
+    }
+
+    #[test]
+    fn cycle_backward_wraps_at_zero() {
+        assert_eq!(cycle_mode_index(0, -1, 3), 2);
+    }
+
+    #[test]
+    fn cycle_forward_single_mode() {
+        assert_eq!(cycle_mode_index(0, 1, 1), 0);
+    }
+
+    #[test]
+    fn cycle_backward_single_mode() {
+        assert_eq!(cycle_mode_index(0, -1, 1), 0);
+    }
+
+    #[test]
+    fn cycle_forward_two_modes() {
+        assert_eq!(cycle_mode_index(0, 1, 2), 1);
+        assert_eq!(cycle_mode_index(1, 1, 2), 0);
+    }
+
+    #[test]
+    fn cycle_backward_two_modes() {
+        assert_eq!(cycle_mode_index(1, -1, 2), 0);
+        assert_eq!(cycle_mode_index(0, -1, 2), 1);
     }
 }

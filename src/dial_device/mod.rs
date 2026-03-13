@@ -100,10 +100,9 @@ impl DialDevice {
         };
 
         let event = match evt {
-            Ok(events::RawInputEvent::Event(_event_status, event)) => {
-                // assert!(matches!(axis_status, ReadStatus::Success));
+            Ok(events::RawInputEvent::Event(event)) => {
                 let event =
-                    DialEvent::from_raw_evt(event.clone()).ok_or(Error::UnexpectedEvt(event))?;
+                    DialEvent::from_raw_evt(event).ok_or(Error::UnexpectedEvt(event))?;
 
                 match event.kind {
                     DialEventKind::ButtonPress => self.possible_long_press = true,
@@ -144,31 +143,93 @@ impl DialDevice {
 }
 
 impl DialEvent {
-    fn from_raw_evt(evt: evdev_rs::InputEvent) -> Option<DialEvent> {
-        use evdev_rs::enums::*;
+    pub(crate) fn from_raw_evt(evt: evdev::InputEvent) -> Option<DialEvent> {
+        use evdev::*;
 
-        let evt_kind = match evt.event_type {
-            EventType::EV_SYN | EventType::EV_MSC => DialEventKind::Ignored,
-            EventType::EV_KEY => match evt.event_code {
-                EventCode::EV_KEY(EV_KEY::BTN_0) => match evt.value {
-                    0 => DialEventKind::ButtonRelease,
-                    1 => DialEventKind::ButtonPress,
-                    _ => return None,
-                },
-                _ => return None,
-            },
-            EventType::EV_REL => match evt.event_code {
-                EventCode::EV_REL(EV_REL::REL_DIAL) => DialEventKind::Dial(evt.value),
-                _ => return None,
-            },
+        let time = evt
+            .timestamp()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+
+        let evt_kind = match evt.destructure() {
+            EventSummary::Synchronization(..) | EventSummary::Misc(..) => DialEventKind::Ignored,
+            EventSummary::Key(_, KeyCode::BTN_0, 0) => DialEventKind::ButtonRelease,
+            EventSummary::Key(_, KeyCode::BTN_0, 1) => DialEventKind::ButtonPress,
+            EventSummary::RelativeAxis(_, RelativeAxisCode::REL_DIAL, value) => {
+                DialEventKind::Dial(value)
+            }
             _ => return None,
         };
 
-        let evt = DialEvent {
-            time: Duration::new(evt.time.tv_sec as u64, (evt.time.tv_usec * 1000) as u32),
+        Some(DialEvent {
+            time,
             kind: evt_kind,
-        };
+        })
+    }
+}
 
-        Some(evt)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use evdev::{EventType, InputEvent, KeyCode, RelativeAxisCode};
+
+    fn make_key(code: KeyCode, value: i32) -> InputEvent {
+        InputEvent::new(EventType::KEY.0, code.0, value)
+    }
+
+    fn make_rel(code: RelativeAxisCode, value: i32) -> InputEvent {
+        InputEvent::new(EventType::RELATIVE.0, code.0, value)
+    }
+
+    #[test]
+    fn btn0_press_is_button_press() {
+        let evt = DialEvent::from_raw_evt(make_key(KeyCode::BTN_0, 1)).unwrap();
+        assert!(matches!(evt.kind, DialEventKind::ButtonPress));
+    }
+
+    #[test]
+    fn btn0_release_is_button_release() {
+        let evt = DialEvent::from_raw_evt(make_key(KeyCode::BTN_0, 0)).unwrap();
+        assert!(matches!(evt.kind, DialEventKind::ButtonRelease));
+    }
+
+    #[test]
+    fn rel_dial_positive_is_dial() {
+        let evt = DialEvent::from_raw_evt(make_rel(RelativeAxisCode::REL_DIAL, 3)).unwrap();
+        assert!(matches!(evt.kind, DialEventKind::Dial(3)));
+    }
+
+    #[test]
+    fn rel_dial_negative_is_dial() {
+        let evt = DialEvent::from_raw_evt(make_rel(RelativeAxisCode::REL_DIAL, -2)).unwrap();
+        assert!(matches!(evt.kind, DialEventKind::Dial(-2)));
+    }
+
+    #[test]
+    fn synchronization_event_is_ignored() {
+        // EV_SYN = 0, SYN_REPORT = 0
+        let evt = DialEvent::from_raw_evt(InputEvent::new(0, 0, 0)).unwrap();
+        assert!(matches!(evt.kind, DialEventKind::Ignored));
+    }
+
+    #[test]
+    fn misc_event_is_ignored() {
+        use evdev::MiscCode;
+        let evt =
+            DialEvent::from_raw_evt(InputEvent::new(EventType::MISC.0, MiscCode::MSC_SCAN.0, 0))
+                .unwrap();
+        assert!(matches!(evt.kind, DialEventKind::Ignored));
+    }
+
+    #[test]
+    fn unknown_key_returns_none() {
+        // KEY_A is not BTN_0
+        assert!(DialEvent::from_raw_evt(make_key(KeyCode::KEY_A, 1)).is_none());
+    }
+
+    #[test]
+    fn non_dial_rel_axis_returns_none() {
+        // REL_X is not REL_DIAL
+        assert!(DialEvent::from_raw_evt(make_rel(RelativeAxisCode::REL_X, 1)).is_none());
     }
 }

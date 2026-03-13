@@ -3,6 +3,7 @@
 
 pub mod common;
 mod config;
+mod config_mode;
 pub mod controller;
 mod dial_device;
 mod error;
@@ -78,19 +79,22 @@ fn controller_main() -> Result<()> {
 
     let dial = DialDevice::new(std::time::Duration::from_millis(750))?;
 
-    let mut controller = DialController::new(
-        dial,
-        cfg.last_mode,
-        vec![
-            Box::new(controller::controls::Scroll::new()),
-            Box::new(controller::controls::ScrollMT::new()),
-            Box::new(controller::controls::Zoom::new()),
-            Box::new(controller::controls::Volume::new()),
-            Box::new(controller::controls::Media::new()),
-            Box::new(controller::controls::MediaWithVolume::new()),
-            Box::new(controller::controls::Paddle::new()),
-        ],
-    );
+    let mut modes: Vec<Box<dyn controller::ControlMode>> = vec![
+        Box::new(controller::controls::Scroll::new()),
+        Box::new(controller::controls::ScrollMT::new()),
+        Box::new(controller::controls::Zoom::new()),
+        Box::new(controller::controls::Volume::new()),
+        Box::new(controller::controls::Media::new()),
+        Box::new(controller::controls::MediaWithVolume::new()),
+        Box::new(controller::controls::Paddle::new()),
+    ];
+
+    match config_mode::load_yaml_modes() {
+        Ok(yaml_modes) => modes.extend(yaml_modes),
+        Err(e) => eprintln!("Warning: could not load modes.yaml: {}", e),
+    }
+
+    let mut controller = DialController::new(dial, cfg.last_mode, modes);
 
     controller.run()
 }

@@ -14,8 +14,8 @@ impl Scroll {
 impl ControlMode for Scroll {
     fn meta(&self) -> ControlModeMeta {
         ControlModeMeta {
-            name: "Scroll",
-            icon: "input-mouse",
+            name: "Scroll".into(),
+            icon: "input-mouse".into(),
             haptics: false,
             steps: 90,
         }

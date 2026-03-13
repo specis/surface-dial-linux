@@ -16,8 +16,8 @@ impl ScrollMT {
 impl ControlMode for ScrollMT {
     fn meta(&self) -> ControlModeMeta {
         ControlModeMeta {
-            name: "Scroll (Fake Multitouch - EXPERIMENTAL)",
-            icon: "input-mouse",
+            name: "Scroll (Fake Multitouch - EXPERIMENTAL)".into(),
+            icon: "input-mouse".into(),
             haptics: false,
             steps: 3600,
         }

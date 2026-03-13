@@ -5,8 +5,8 @@ use crate::error::Result;
 impl ControlMode for () {
     fn meta(&self) -> ControlModeMeta {
         ControlModeMeta {
-            name: "null",
-            icon: "",
+            name: "null".into(),
+            icon: "".into(),
             haptics: false,
             steps: 3600,
         }
