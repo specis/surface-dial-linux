@@ -32,8 +32,6 @@ Modes in **bold** are **experimental** — they work most of the time but could 
 
 ---
 
----
-
 ## D-Bus Integration (`DbusMode`)
 
 The **D-Bus** mode broadcasts every dial event as a D-Bus signal on the session bus.  It is intended as a building block for external overlays, applets, or scripts that need to react to dial input without having to handle raw evdev events themselves.
@@ -201,16 +199,29 @@ For anything beyond what YAML supports, see [Adding a coded mode](#adding-a-code
 
 ---
 
-## Building
+## Requirements
 
-Building `surface-dial-daemon` requires:
+### Hardware
 
-- Linux Kernel 4.19 or higher
-- A recent Rust toolchain (install via [rustup](https://rustup.rs/))
-- `libudev`, `libevdev`, `hidapi`
+- Microsoft Surface Dial (Bluetooth)
+
+### Kernel
+
+- **Linux 4.19 or higher** — required for stable Surface Dial input driver support
+  - `REL_DIAL` event support was introduced in 4.14, but 4.19 is the tested minimum
+  - High-resolution wheel scrolling (`REL_WHEEL_HI_RES`) requires kernel 5.0+; the daemon emits both `REL_WHEEL` and `REL_WHEEL_HI_RES` so it works on older kernels too
+
+### System libraries (build-time)
+
+| Library | Purpose |
+| ------- | ------- |
+| `libevdev` | Read raw input events from `/dev/input/eventXX` and create virtual input devices via `/dev/uinput` |
+| `libhidapi` | Configure haptics and sensitivity over HID (device `045e:091b`) |
+| `libudev` | Enumerate devices and monitor dial connect/disconnect events |
+| `libdbus-1` | D-Bus IPC — required indirectly by `zbus`; may need a dev package on some distros |
 
 ```bash
-# e.g. on Ubuntu / Debian
+# Ubuntu / Debian
 sudo apt install libevdev-dev libhidapi-dev libudev-dev
 ```
 
@@ -220,7 +231,16 @@ On some Ubuntu versions you may also need:
 sudo apt install librust-libdbus-sys-dev
 ```
 
-Then build with Cargo:
+### Runtime
+
+- **A running D-Bus session** — required for desktop notifications when switching modes
+- **udev rules** — mandatory for the daemon to access `/dev/uinput` and the dial's `hidraw` device without running as root (see [Installation](#installation))
+- **`input` group membership** — required for read access to `/dev/input/eventXX`
+- **GNOME Shell 40+** — only required for the optional focus-based automatic mode switching (`profiles.toml`); all other features work without it
+
+---
+
+## Building
 
 ```bash
 cargo build --release
@@ -259,7 +279,7 @@ sudo gpasswd -a $(whoami) $(stat -c "%G" /dev/input/event0)
 mkdir -p ~/.config/systemd/user/
 cp ./install/surface-dial.service ~/.config/systemd/user/surface-dial.service
 
-# Install udev rules (grants access to /dev/uinput and the dial's hidraw device)
+# Install udev rules — mandatory for unprivileged access to /dev/uinput and the dial's hidraw device
 sudo cp ./install/10-uinput.rules /etc/udev/rules.d/10-uinput.rules
 sudo cp ./install/10-surface-dial.rules /etc/udev/rules.d/10-surface-dial.rules
 
@@ -381,5 +401,6 @@ The daemon uses threads and `mpsc` channels for non-blocking event handling. Eac
 - [ ] Config file for adjusting timings (long-press timeout, double-click window, etc.)
 - [ ] Custom mode ordering in the meta-menu
 - [ ] Focus tracking on non-GNOME desktops (KDE, sway, etc.)
-- [ ] Windows-like wheel overlay UI
+- [x] Windows-like wheel overlay UI
+  * Implemented via DBus such as [surface-dial-overley project](https://github.com/specis/surface-dial-overlay)
 - [ ] Packaging pipeline (deb/rpm)
