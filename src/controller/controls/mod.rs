@@ -1,3 +1,4 @@
+mod dbus_mode;
 mod media;
 mod media_with_volume;
 mod null;
@@ -7,6 +8,7 @@ mod scroll_mt;
 mod volume;
 mod zoom;
 
+pub use self::dbus_mode::*;
 pub use self::media::*;
 pub use self::media_with_volume::*;
 pub use self::null::*;

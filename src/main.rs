@@ -8,6 +8,7 @@ pub mod controller;
 mod dial_device;
 mod error;
 mod fake_input;
+mod focus_watcher;
 
 use std::sync::mpsc;
 
@@ -87,6 +88,7 @@ fn controller_main() -> Result<()> {
         Box::new(controller::controls::Media::new()),
         Box::new(controller::controls::MediaWithVolume::new()),
         Box::new(controller::controls::Paddle::new()),
+        Box::new(controller::controls::DbusMode::new()),
     ];
 
     match config_mode::load_yaml_modes() {
@@ -95,6 +97,8 @@ fn controller_main() -> Result<()> {
     }
 
     let mut controller = DialController::new(dial, cfg.last_mode, modes);
+
+    focus_watcher::FocusWatcher::start(controller.mode_switcher());
 
     controller.run()
 }

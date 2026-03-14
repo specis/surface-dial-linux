@@ -5,6 +5,29 @@ use crate::error::{Error, Result};
 
 pub mod controls;
 
+/// A lightweight handle for switching modes from external threads (e.g. the
+/// focus watcher).  Cloning is cheap — it only clones the Arc.
+pub struct ModeSwitcher {
+    new_mode: Arc<Mutex<Option<usize>>>,
+    mode_names: Vec<String>,
+}
+
+impl ModeSwitcher {
+    pub fn switch_to(&self, name: &str) {
+        if let Some(idx) = self.mode_names.iter().position(|n| n == name) {
+            if let Ok(mut guard) = self.new_mode.lock() {
+                *guard = Some(idx);
+            }
+        } else {
+            eprintln!(
+                "Warning: no mode named '{}' (available: {})",
+                name,
+                self.mode_names.join(", ")
+            );
+        }
+    }
+}
+
 pub struct ControlModeMeta {
     /// Mode Name (as displayed in the Meta selection menu)
     pub(crate) name: String,
@@ -67,6 +90,26 @@ impl DialController {
 
             new_mode: new_mode.clone(),
             meta_mode: Box::new(MetaMode::new(new_mode, initial_mode, metas)),
+        }
+    }
+
+    /// Return a handle that external threads can use to request a mode switch.
+    /// The switch is picked up at the start of the next event-loop iteration.
+    pub fn mode_switcher(&self) -> ModeSwitcher {
+        ModeSwitcher {
+            new_mode: self.new_mode.clone(),
+            mode_names: self.modes.iter().map(|m| m.meta().name.clone()).collect(),
+        }
+    }
+
+    /// Schedule a mode switch by name.  Has no effect if the name is unknown.
+    pub fn switch_mode_by_name(&mut self, name: &str) {
+        if let Some(idx) = self.modes.iter().position(|m| m.meta().name == name) {
+            if let Ok(mut guard) = self.new_mode.lock() {
+                *guard = Some(idx);
+            }
+        } else {
+            eprintln!("Warning: no mode named '{}'", name);
         }
     }
 
