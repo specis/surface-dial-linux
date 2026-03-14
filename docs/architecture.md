@@ -84,6 +84,26 @@ classDiagram
         +on_btn_release(haptics) Result
         +on_dial(haptics, delta) Result
     }
+    class DbusMode {
+        -tx: SyncSender~DbusEvent~
+        +new() DbusMode
+        +meta() ControlModeMeta
+        +on_btn_press(haptics) Result
+        +on_btn_release(haptics) Result
+        +on_dial(haptics, delta) Result
+    }
+    class DbusEvent {
+        <<enumeration>>
+        Rotated(i32)
+        Pressed
+        Released
+    }
+    class DialInterface {
+        <<zbus interface: com.dialmenu.Daemon>>
+        +dial_rotated(ctx, delta i32) signal
+        +dial_pressed(ctx) signal
+        +dial_released(ctx) signal
+    }
 
     %% ── Controller ──────────────────────────────────────────────────────────
     class DialController {
@@ -93,7 +113,31 @@ classDiagram
         -new_mode: Arc~Mutex~Option~usize~~~
         -meta_mode: Box~ControlMode~
         +new(device, initial_mode, modes) DialController
+        +mode_switcher() ModeSwitcher
+        +switch_mode_by_name(name) void
         +run() Result
+    }
+    class ModeSwitcher {
+        -new_mode: Arc~Mutex~Option~usize~~~
+        -mode_names: Vec~String~
+        +switch_to(name)
+    }
+
+    %% ── Focus Watcher ───────────────────────────────────────────────────────
+    class FocusWatcher {
+        +start(switcher ModeSwitcher)$
+    }
+    class ShellIntrospectProxy {
+        <<zbus proxy: org.gnome.Shell.Introspect>>
+        +get_windows() Result~HashMap~
+    }
+    class ProfilesConfig {
+        +profile: Vec~Profile~
+    }
+    class Profile {
+        +name: String
+        +match_app_id: Option~String~
+        +mode: String
     }
     class ActiveMode {
         <<enumeration>>
@@ -257,6 +301,7 @@ classDiagram
     ControlMode <|.. Paddle
     ControlMode <|.. ConfigMode
     ControlMode <|.. MetaMode
+    ControlMode <|.. DbusMode
 
     %% ControlMode returns metadata
     ControlMode ..> ControlModeMeta : returns
@@ -267,9 +312,23 @@ classDiagram
     DialController *-- MetaMode : owns
     DialController *-- ActiveMode : active_mode
     DialController --> Config : reads/writes
+    DialController ..> ModeSwitcher : produces via mode_switcher()
 
     %% MetaMode shares new_mode Arc with DialController
     MetaMode ..> DialController : signals via Arc~Mutex~
+
+    %% ModeSwitcher shares new_mode Arc
+    ModeSwitcher ..> DialController : writes new_mode via Arc~Mutex~
+
+    %% DbusMode internal structure
+    DbusMode *-- DbusEvent : sends via mpsc
+    DbusMode ..> DialInterface : emits signals via tokio thread
+
+    %% FocusWatcher
+    FocusWatcher ..> ModeSwitcher : calls switch_to()
+    FocusWatcher ..> ShellIntrospectProxy : polls get_windows()
+    FocusWatcher *-- ProfilesConfig : loads from profiles.toml
+    ProfilesConfig *-- Profile
 
     %% DialDevice owns haptics proxy and receives events
     DialDevice *-- DialHaptics : owns
@@ -312,6 +371,7 @@ graph TD
     main["main()"] --> sig["Signal Handler Thread\n(polls SIGTERM/SIGINT)"]
     main --> ctrl["controller_main() Thread"]
 
+    ctrl --> fw["FocusWatcher Thread\n(tokio runtime + 1s poll)"]
     ctrl --> dc["DialController::run()"]
     dc --> dd["DialDevice::next_event()"]
 
@@ -324,6 +384,11 @@ graph TD
     dc -->|"spawns"| pw["PaddleWorker Thread\n(velocity decay loop)"]
     dc -->|"spawns"| mw["MediaWithVolume Worker Thread\n(double-click detection)"]
     dc -->|"spawns (temp)"| sw["ScrollMT startup Thread\n(500ms workaround)"]
+    dc -->|"spawns (DbusMode::new)"| db["DbusMode Thread\n(tokio runtime + D-Bus signals)"]
+
+    fw -->|"switch_to() via ModeSwitcher\nArc&lt;Mutex&gt;"| dc
+    fw -->|"get_windows() D-Bus call"| gs["org.gnome.Shell.Introspect"]
+    db -->|"DialRotated / DialPressed / DialReleased\n(com.dialmenu.Daemon)"| dbus["Session Bus"]
 ```
 
 ## Event Flow: Dial Rotation
@@ -345,4 +410,43 @@ sequenceDiagram
     CM->>FI: key_click / scroll_step / scroll_mt_step
     FI->>FI: VirtualDevice.emit(InputEvent[])
     Note over FI: Kernel forwards to focused app
+```
+
+## Event Flow: D-Bus Signal Emission (DbusMode)
+
+```mermaid
+sequenceDiagram
+    participant DC as DialController
+    participant DM as DbusMode
+    participant CH as mpsc channel
+    participant BG as DbusMode BG Thread (tokio)
+    participant BUS as Session Bus
+
+    DC->>DM: on_dial(haptics, delta)
+    DM->>CH: try_send(DbusEvent::Rotated(delta))
+    BG->>CH: recv()
+    BG->>BG: DialInterface::dial_rotated(&signal_ctx, delta).await
+    BG->>BUS: signal com.dialmenu.Daemon.DialRotated(delta)
+    Note over BUS: Broadcast to all subscribers
+```
+
+## Event Flow: Focus-based Mode Switch (FocusWatcher)
+
+```mermaid
+sequenceDiagram
+    participant FW as FocusWatcher Thread (tokio)
+    participant BUS as Session Bus (org.gnome.Shell.Introspect)
+    participant MS as ModeSwitcher
+    participant DC as DialController (next iteration)
+
+    loop every 1 second
+        FW->>BUS: GetWindows()
+        BUS-->>FW: {window_id: {app-id, has-focus, ...}}
+        FW->>FW: find has-focus=true → app-id
+        FW->>FW: match against profiles.toml
+        FW->>MS: switch_to("DbusMode")
+        MS->>MS: *new_mode.lock() = Some(idx)
+    end
+    DC->>DC: top of run() loop — picks up new_mode
+    DC->>DC: activate new mode
 ```

@@ -25,9 +25,103 @@ Modes in **bold** are **experimental** — they work most of the time but could 
 | Media                        | Play/Pause        | Next/Prev track      |                                                                                         |
 | Media + Volume               | Play/Pause        | Volume up/down       | Double-click = Next Track                                                               |
 | **Paddle Controller**        | Space             | Left/Right arrow key | Play [arkanoid](https://www.google.com/search?q=arkanoid+paddle) as the devs intended! |
+| D-Bus                        | DialPressed       | DialRotated          | Broadcasts events on the session bus — for external integrations                        |
 | _Your custom modes…_         | _configurable_    | _configurable_       | Defined in `modes.yaml` — see below                                                     |
 
 <sup>1</sup> Most Linux programs still only handle the older, chunky scroll-wheel events. See [this post](https://who-t.blogspot.com/2020/04/high-resolution-wheel-scrolling-in.html) for background.
+
+---
+
+---
+
+## D-Bus Integration (`DbusMode`)
+
+The **D-Bus** mode broadcasts every dial event as a D-Bus signal on the session bus.  It is intended as a building block for external overlays, applets, or scripts that need to react to dial input without having to handle raw evdev events themselves.
+
+### Service details
+
+| Property        | Value                                      |
+| --------------- | ------------------------------------------ |
+| Service name    | `com.dialmenu.Daemon`                      |
+| Object path     | `/com/dialmenu/Daemon`                     |
+| Interface       | `com.dialmenu.Daemon`                      |
+
+### Signals
+
+| Signal                    | Arguments       | Emitted when…                            |
+| ------------------------- | --------------- | ---------------------------------------- |
+| `DialRotated(delta: i32)` | `+1` or `−1`    | The dial is rotated by one step          |
+| `DialPressed()`           | —               | The button is pressed down               |
+| `DialReleased()`          | —               | The button is released                   |
+
+### Listening from the command line
+
+```bash
+# print every signal in real time
+dbus-monitor "type='signal',interface='com.dialmenu.Daemon'"
+```
+
+### Listening from Python
+
+```python
+import dbus, dbus.mainloop.glib
+from gi.repository import GLib
+
+dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+bus = dbus.SessionBus()
+bus.add_signal_receiver(
+    lambda delta: print("rotated", delta),
+    signal_name="DialRotated",
+    dbus_interface="com.dialmenu.Daemon",
+)
+GLib.MainLoop().run()
+```
+
+If another process has already claimed the `com.dialmenu.Daemon` service name, the daemon will log a warning but still emit signals — the signals are broadcast to any subscriber regardless of who owns the name.
+
+---
+
+## Focus-based mode switching (`profiles.toml`)
+
+The daemon can automatically switch modes based on which application has focus.  This feature is **opt-in**: if the config file does not exist, nothing happens.
+
+### Config file location
+
+```
+~/.config/surface-dial/profiles.toml
+```
+
+### Format
+
+```toml
+[[profile]]
+name = "browser"
+match_app_id = "firefox"
+mode = "DbusMode"
+
+[[profile]]
+name = "media"
+match_app_id = "vlc"
+mode = "Media"
+
+[[profile]]
+name = "default"
+mode = "Scroll"
+```
+
+### Profile fields
+
+| Field          | Required | Description                                                                                  |
+| -------------- | -------- | -------------------------------------------------------------------------------------------- |
+| `name`         | yes      | Human-readable label (not used at runtime, only for your reference)                          |
+| `match_app_id` | no       | Case-insensitive substring matched against the focused window's `app-id`. Omit for default.  |
+| `mode`         | yes      | Name of the `ControlMode` to activate (must match exactly, e.g. `"Scroll"`, `"DbusMode"`)   |
+
+Profiles are checked in order.  The first entry whose `match_app_id` is found anywhere in the focused window's app-id wins.  The first entry without a `match_app_id` acts as the fallback default.  If no default entry exists, `Scroll` is used.
+
+### Requirements
+
+Focus tracking uses the `org.gnome.Shell.Introspect` D-Bus interface, which is provided by **GNOME Shell 40 and later**.  The watcher logs a warning and exits cleanly if GNOME Shell is not running; other desktop environments are not currently supported.
 
 ---
 
@@ -262,8 +356,13 @@ Core functionality is provided by:
 - **`hidapi`** — configures dial sensitivity and haptics over HID
 - **`notify-rust`** — sends desktop notifications over D-Bus
 - **`serde` + `serde_yaml`** — parses `modes.yaml` for custom modes
+- **`serde` + `toml`** — parses `profiles.toml` for focus-based mode switching
+- **`zbus`** — D-Bus session bus integration (signal emission in `DbusMode`, window-focus queries in `FocusWatcher`)
+- **`tokio`** — async runtime used by `zbus` inside dedicated background threads
 
 The daemon uses threads and `mpsc` channels for non-blocking event handling. Each subsystem (event reading, haptics, paddle velocity, double-click detection) runs in its own thread and communicates via channels. All the device-level complexity is hidden behind the `ControlMode` trait — mode implementations only see clean `on_dial`, `on_btn_press`, and `on_btn_release` callbacks.
+
+`DbusMode` and `FocusWatcher` each spin up their own background thread containing a tokio runtime so that async D-Bus I/O can run without making the rest of the daemon async.  Mode switching from the focus watcher is coordinated through a `ModeSwitcher` handle that shares the controller's existing `Arc<Mutex<Option<usize>>>` slot, so no extra locking is introduced in the hot path.
 
 ---
 
@@ -277,8 +376,10 @@ The daemon uses threads and `mpsc` channels for non-blocking event handling. Eac
 - [x] Last-selected mode persistence
 - [x] Graceful disconnect/reconnect handling
 - [x] Visual feedback via FreeDesktop notifications
+- [x] D-Bus signal broadcasting (`DbusMode`)
+- [x] Focus-based automatic mode switching (`profiles.toml`)
 - [ ] Config file for adjusting timings (long-press timeout, double-click window, etc.)
 - [ ] Custom mode ordering in the meta-menu
-- [ ] Context-sensitive mode switching (based on the active application)
+- [ ] Focus tracking on non-GNOME desktops (KDE, sway, etc.)
 - [ ] Windows-like wheel overlay UI
 - [ ] Packaging pipeline (deb/rpm)
